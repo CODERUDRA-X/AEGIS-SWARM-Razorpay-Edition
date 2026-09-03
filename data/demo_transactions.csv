@@ -1,0 +1,14 @@
+transaction_id,customer_id,amount_inr,payment_method,hour_of_day,velocity_1h,velocity_24h,new_device,geo_mismatch,billing_shipping_mismatch,failed_attempts_prior,account_age_days,prior_successful_txns,prior_chargebacks,known_device_count,is_fraud
+TXN_DEMO_A,CUST_DEMO_A,78900.0,card,3,4,7,True,True,True,3,2,0,0,1,1
+TXN_DEMO_B_HIST1,CUST_DEMO_B,9800.0,card,15,0,1,False,False,False,0,640,34,0,2,0
+TXN_DEMO_B_HIST2,CUST_DEMO_B,11200.0,card,15,0,1,False,False,False,0,640,34,0,2,0
+TXN_DEMO_B_HIST3,CUST_DEMO_B,8600.0,card,15,0,1,False,False,False,0,640,34,0,2,0
+TXN_DEMO_B_HIST4,CUST_DEMO_B,12100.0,card,15,0,1,False,False,False,0,640,34,0,2,0
+TXN_DEMO_B_HIST5,CUST_DEMO_B,10400.0,card,15,0,1,False,False,False,0,640,34,0,2,0
+TXN_DEMO_B,CUST_DEMO_B,32400.0,card,2,2,4,True,False,False,1,640,34,0,2,0
+TXN_DEMO_C_HIST1,CUST_DEMO_C,2100.0,upi,11,0,1,False,False,False,0,410,22,0,2,0
+TXN_DEMO_C_HIST2,CUST_DEMO_C,2350.0,upi,11,0,1,False,False,False,0,410,22,0,2,0
+TXN_DEMO_C_HIST3,CUST_DEMO_C,1980.0,upi,11,0,1,False,False,False,0,410,22,0,2,0
+TXN_DEMO_C_HIST4,CUST_DEMO_C,2450.0,upi,11,0,1,False,False,False,0,410,22,0,2,0
+TXN_DEMO_C_HIST5,CUST_DEMO_C,2260.0,upi,11,0,1,False,False,False,0,410,22,0,2,0
+TXN_DEMO_C,CUST_DEMO_C,2200.0,upi,11,0,1,False,False,False,0,410,22,0,2,0

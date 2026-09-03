@@ -1,0 +1,4 @@
+customer_id,account_age_days,prior_successful_txns,prior_chargebacks,known_device_count
+CUST_DEMO_A,2,0,0,1
+CUST_DEMO_B,640,34,0,2
+CUST_DEMO_C,410,22,0,2

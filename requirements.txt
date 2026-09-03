@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+python-multipart
+python-dotenv
+pydantic
+google-genai
+slowapi
+pytest
+httpx
+mcp<2.0.0
+pandas
+numpy
+scikit-learn
+xgboost
