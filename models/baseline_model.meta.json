@@ -1,0 +1,20 @@
+{
+  "backend": "dev_hist_gb",
+  "feature_names": [
+    "amount_inr",
+    "hour_of_day",
+    "velocity_1h",
+    "velocity_24h",
+    "failed_attempts_prior",
+    "account_age_days",
+    "prior_successful_txns",
+    "prior_chargebacks",
+    "known_device_count",
+    "new_device",
+    "geo_mismatch",
+    "billing_shipping_mismatch",
+    "payment_method"
+  ],
+  "training_rows": 630,
+  "training_fraud_rate": 0.1508
+}
