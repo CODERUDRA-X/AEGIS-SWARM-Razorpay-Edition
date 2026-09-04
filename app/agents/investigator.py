@@ -119,16 +119,24 @@ def _classify_evidence(txn: Transaction, raw_evidence: dict) -> tuple[list[str],
     return supporting, contradicting
 
 
-def investigate(txn: Transaction, detector_output: DetectorOutput) -> EvidencePacket:
+async def investigate_async(txn: Transaction, detector_output: DetectorOutput, session=None) -> EvidencePacket:
     """
-    Retrieves real evidence via MCP (app.mcp.client.gather_all_evidence)
-    and classifies it relative to the Detector's fraud hypothesis.
+    Async core of investigate() -- retrieves real evidence via MCP and
+    classifies it relative to the Detector's fraud hypothesis.
 
-    This function is synchronous at the call site (wraps the async MCP
-    client call) so it composes cleanly with the rest of the pipeline in
-    services/risk_engine.py, which orchestrates the full sync pipeline.
+    Pass `session` (an already-open session from
+    `app.mcp.client.mcp_session()`) to reuse one persistent MCP
+    subprocess across many calls to this function -- this is what
+    app/services/evaluation.py's held-out evaluation loop does, instead
+    of each of the 135 transactions independently spawning 5 new MCP
+    subprocesses (675 total spawns, the confirmed root cause of a
+    multi-minute evaluation hang on Windows -- see app/mcp/client.py's
+    module docstring for the full diagnosis).
+
+    Defaults to session=None, which preserves the exact original
+    per-call-subprocess (or in-process fallback) behavior.
     """
-    raw_evidence = asyncio.run(gather_all_evidence(txn.transaction_id, txn.customer_id))
+    raw_evidence = await gather_all_evidence(txn.transaction_id, txn.customer_id, session=session)
 
     supporting, contradicting = _classify_evidence(txn, raw_evidence)
 
@@ -154,3 +162,21 @@ def investigate(txn: Transaction, detector_output: DetectorOutput) -> EvidencePa
         supporting_fraud_signals=supporting,
         contradicting_fraud_signals=contradicting,
     )
+
+
+def investigate(txn: Transaction, detector_output: DetectorOutput) -> EvidencePacket:
+    """
+    Retrieves real evidence via MCP (app.mcp.client.gather_all_evidence)
+    and classifies it relative to the Detector's fraud hypothesis.
+
+    This function is synchronous at the call site (wraps the async MCP
+    client call) so it composes cleanly with the rest of the pipeline in
+    services/risk_engine.py, which orchestrates the full sync pipeline.
+    UNCHANGED behavior -- this is now a thin wrapper around
+    investigate_async() with session=None (own subprocess per call),
+    used by every existing single-transaction caller (main.py's
+    /api/analyze, tests, demo verification). The evaluation harness uses
+    investigate_async() directly with a shared session instead of this
+    function -- see app/services/risk_engine.py::run_pipeline_async().
+    """
+    return asyncio.run(investigate_async(txn, detector_output, session=None))
