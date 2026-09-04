@@ -42,13 +42,63 @@ TO VERIFY REAL MCP LOCALLY:
     python -c "import asyncio; from app.mcp.client import gather_all_evidence; \\
                print(asyncio.run(gather_all_evidence('TXN_000070', 'CUST_00139')))"
     # Check the printed startup message confirms "real MCP subprocess/stdio path".
+
+============================================================
+PERSISTENT-SESSION FIX (added after a real hang was diagnosed on
+Windows during full held-out evaluation):
+============================================================
+The functions below (get_customer_history, get_device_history, etc.)
+each independently call _call_mcp_tool(), which -- if not given an
+existing session -- spawns a BRAND NEW subprocess (full process
+creation + JSON-RPC initialize() handshake) via _call_mcp_tool_real()
+for that ONE call, then tears the subprocess down. gather_all_evidence()
+calls five of these per transaction. Over a 135-row evaluation run,
+that is 675 individual subprocess spawns.
+
+This was fine for single-transaction use (a live /api/analyze request,
+or the one-off verify_local_production_path.py check) where the
+per-call overhead is invisible. It is NOT fine for the evaluation
+harness, which calls gather_all_evidence() 135 times in a loop --
+process creation is expensive, especially on Windows (no fork();
+CreateProcess is commonly 1-3+ seconds under antivirus real-time
+scanning), and 675 sequential spawns can plausibly account for 20+
+minutes of low-CPU, I/O-bound wall-clock time that looks like a hang
+but is actually just extreme sequential process-creation overhead.
+
+The fix: `mcp_session()` below is an async context manager that opens
+ONE subprocess + one JSON-RPC session and keeps it alive for reuse
+across many tool calls. Every function in this module now accepts an
+OPTIONAL `session` parameter:
+  - session=None (default): unchanged behavior -- opens and tears down
+    its own subprocess for this one call. Used by every existing
+    caller (main.py's /api/analyze, verify_local_production_path.py,
+    the test suite) with ZERO changes needed to those call sites.
+  - session=<an object from mcp_session()>: reuses that session's
+    already-open subprocess instead of spawning a new one. Used by
+    app/services/evaluation.py's evaluation loop, which opens exactly
+    ONE session for the entire 135-transaction run.
+
+This is purely a transport-efficiency change. It does not alter what
+evidence is returned, what the tools do, or any evaluation semantics.
 """
 
+import os
 import sys
 import json
+import asyncio
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 MCP_SERVER_PATH = str(Path(__file__).resolve().parent / "server.py")
+
+# Bounded timeout for a single MCP tool call. Previously there was NO
+# timeout anywhere on session.call_tool() -- if a call genuinely hung
+# (vs. merely being slow due to subprocess-spawn overhead, see the
+# PERSISTENT-SESSION FIX note above), there was no way to detect or
+# recover from it. 30s is generous for a local subprocess round-trip
+# (which should normally take milliseconds); configurable via env var
+# so this can be tuned per-environment without a code change.
+MCP_CALL_TIMEOUT_SECONDS = float(os.environ.get("AEGIS_MCP_TIMEOUT_SECONDS", "30"))
 
 try:
     from mcp import ClientSession, StdioServerParameters
@@ -68,32 +118,83 @@ except ImportError:
     )
 
 
-async def _call_mcp_tool_real(tool_name: str, arguments: dict) -> dict:
+@asynccontextmanager
+async def mcp_session():
     """
-    REAL MCP PATH. Spawns the evidence MCP server as a subprocess,
-    performs the JSON-RPC initialize() handshake, calls the requested
-    tool, and returns its parsed JSON result. Mirrors AEGIS v1's
-    get_telemetry_via_mcp() function structure exactly. Untested in
-    this sandbox (see module docstring) -- verify locally.
+    Opens ONE MCP subprocess + one JSON-RPC ClientSession and yields it
+    for reuse across many tool calls -- this is the persistent-session
+    fix described in the module docstring. The subprocess is spawned and
+    initialize()'d exactly once, then torn down exactly once when the
+    `async with` block exits (or on exception).
+
+    If `mcp` isn't installed (sandbox/dev fallback), yields None -- every
+    function in this module treats session=None as "use the no-session
+    path" regardless of whether that means "spawn a fresh subprocess"
+    (USE_REAL_MCP=True) or "call the in-process fallback" (USE_REAL_MCP=False),
+    so callers do not need to branch on USE_REAL_MCP themselves.
+
+    Usage:
+        async with mcp_session() as session:
+            for txn in many_transactions:
+                evidence = await gather_all_evidence(txn.id, txn.cust_id, session=session)
     """
+    if not USE_REAL_MCP:
+        yield None
+        return
+
     server_params = StdioServerParameters(
         command=sys.executable,
         args=[MCP_SERVER_PATH],
         env=None,
     )
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            yield session
 
+
+async def _call_mcp_tool_real(tool_name: str, arguments: dict, session=None) -> dict:
+    """
+    REAL MCP PATH. If `session` is provided, reuses it (no new
+    subprocess). Otherwise spawns a fresh subprocess for this one call
+    -- the original behavior, preserved exactly for callers that don't
+    pass a session (single-transaction use: main.py, verify script,
+    tests).
+
+    Every call is now bounded by MCP_CALL_TIMEOUT_SECONDS via
+    asyncio.wait_for -- previously unbounded, which meant a genuinely
+    stuck call (as opposed to merely slow due to subprocess overhead)
+    would hang the whole process with no way to detect it.
+    """
     try:
-        async with stdio_client(server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                result = await session.call_tool(tool_name, arguments=arguments)
+        if session is not None:
+            result = await asyncio.wait_for(
+                session.call_tool(tool_name, arguments=arguments),
+                timeout=MCP_CALL_TIMEOUT_SECONDS,
+            )
+        else:
+            server_params = StdioServerParameters(
+                command=sys.executable,
+                args=[MCP_SERVER_PATH],
+                env=None,
+            )
+            async with stdio_client(server_params) as (read, write):
+                async with ClientSession(read, write) as new_session:
+                    await asyncio.wait_for(new_session.initialize(), timeout=MCP_CALL_TIMEOUT_SECONDS)
+                    result = await asyncio.wait_for(
+                        new_session.call_tool(tool_name, arguments=arguments),
+                        timeout=MCP_CALL_TIMEOUT_SECONDS,
+                    )
 
-                if result.content and len(result.content) > 0:
-                    raw_data = result.content[0].text
-                    return json.loads(raw_data)
+        if result.content and len(result.content) > 0:
+            raw_data = result.content[0].text
+            return json.loads(raw_data)
 
-                return {"error": "Empty response from MCP tool", "mcp_status": "empty_response"}
+        return {"error": "Empty response from MCP tool", "mcp_status": "empty_response"}
 
+    except asyncio.TimeoutError:
+        print(f"[MCP CLIENT] TIMEOUT after {MCP_CALL_TIMEOUT_SECONDS}s calling {tool_name}({arguments})")
+        return {"error": f"MCP call timed out after {MCP_CALL_TIMEOUT_SECONDS}s", "mcp_status": "timeout"}
     except Exception as e:
         print(f"[MCP CLIENT] Protocol communication failed calling {tool_name}: {e}")
         return {"error": str(e), "mcp_status": "protocol_failure"}
@@ -118,48 +219,55 @@ def _call_mcp_tool_fallback(tool_name: str, arguments: dict) -> dict:
     return tool_fn(**arguments)
 
 
-async def _call_mcp_tool(tool_name: str, arguments: dict) -> dict:
-    """Dispatches to the real MCP path or the in-process fallback, per USE_REAL_MCP."""
+async def _call_mcp_tool(tool_name: str, arguments: dict, session=None) -> dict:
+    """Dispatches to the real MCP path (optionally reusing `session`) or the in-process fallback."""
     if USE_REAL_MCP:
-        return await _call_mcp_tool_real(tool_name, arguments)
+        return await _call_mcp_tool_real(tool_name, arguments, session=session)
     return _call_mcp_tool_fallback(tool_name, arguments)
 
 
-async def get_customer_history(customer_id: str) -> dict:
-    return await _call_mcp_tool("get_customer_history", {"customer_id": customer_id})
+async def get_customer_history(customer_id: str, session=None) -> dict:
+    return await _call_mcp_tool("get_customer_history", {"customer_id": customer_id}, session=session)
 
 
-async def get_device_history(customer_id: str) -> dict:
-    return await _call_mcp_tool("get_device_history", {"customer_id": customer_id})
+async def get_device_history(customer_id: str, session=None) -> dict:
+    return await _call_mcp_tool("get_device_history", {"customer_id": customer_id}, session=session)
 
 
-async def get_velocity(transaction_id: str) -> dict:
-    return await _call_mcp_tool("get_velocity", {"transaction_id": transaction_id})
+async def get_velocity(transaction_id: str, session=None) -> dict:
+    return await _call_mcp_tool("get_velocity", {"transaction_id": transaction_id}, session=session)
 
 
-async def get_transaction_history(customer_id: str, exclude_transaction_id: str | None = None) -> dict:
+async def get_transaction_history(customer_id: str, exclude_transaction_id: str | None = None, session=None) -> dict:
     args = {"customer_id": customer_id}
     if exclude_transaction_id:
         args["exclude_transaction_id"] = exclude_transaction_id
-    return await _call_mcp_tool("get_transaction_history", args)
+    return await _call_mcp_tool("get_transaction_history", args, session=session)
 
 
-async def get_chargeback_history(customer_id: str) -> dict:
-    return await _call_mcp_tool("get_chargeback_history", {"customer_id": customer_id})
+async def get_chargeback_history(customer_id: str, session=None) -> dict:
+    return await _call_mcp_tool("get_chargeback_history", {"customer_id": customer_id}, session=session)
 
 
-async def gather_all_evidence(transaction_id: str, customer_id: str) -> dict:
+async def gather_all_evidence(transaction_id: str, customer_id: str, session=None) -> dict:
     """
     Convenience function: calls all five evidence tools for one
     transaction and returns the combined raw results. This is what
     the Investigator agent calls -- one function, five real MCP
     round-trips underneath (not five hallucinated fields).
+
+    Pass `session` (from `async with mcp_session() as session:`) to
+    reuse one already-open subprocess across many calls to this
+    function -- e.g. across all 135 transactions in a held-out
+    evaluation run -- instead of spawning 5 new subprocesses every
+    single call. Defaults to None (original per-call-subprocess
+    behavior), so every existing caller is unaffected.
     """
-    customer_hist = await get_customer_history(customer_id)
-    device_hist = await get_device_history(customer_id)
-    velocity = await get_velocity(transaction_id)
-    txn_hist = await get_transaction_history(customer_id, exclude_transaction_id=transaction_id)
-    chargeback_hist = await get_chargeback_history(customer_id)
+    customer_hist = await get_customer_history(customer_id, session=session)
+    device_hist = await get_device_history(customer_id, session=session)
+    velocity = await get_velocity(transaction_id, session=session)
+    txn_hist = await get_transaction_history(customer_id, exclude_transaction_id=transaction_id, session=session)
+    chargeback_hist = await get_chargeback_history(customer_id, session=session)
 
     return {
         "customer_history": customer_hist,
