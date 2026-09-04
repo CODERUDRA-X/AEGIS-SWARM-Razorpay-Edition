@@ -30,7 +30,7 @@ from app.schemas.decision import PolicyDecision
 
 from app.models.baseline import TrainedModel, predict_risk
 from app.agents.detector import explain_detection
-from app.agents.investigator import investigate
+from app.agents.investigator import investigate, investigate_async
 from app.agents.critic import challenge
 from app.policy.gate import decide
 
@@ -102,6 +102,57 @@ def run_pipeline(
         critic_review = _rule_based_critic_fallback(txn, detector_output, evidence)
 
     # Stage 5: Deterministic Policy Gate decides the action
+    decision = decide(txn, detector_output, critic_review)
+
+    return PipelineResult(
+        transaction=txn,
+        detector=detector_output,
+        evidence=evidence,
+        critic=critic_review,
+        decision=decision,
+    )
+
+
+async def run_pipeline_async(
+    txn: Transaction,
+    model: TrainedModel,
+    mcp_session=None,
+    use_llm_detector: bool = True,
+    use_llm_critic: bool = True,
+) -> PipelineResult:
+    """
+    Async counterpart to run_pipeline(), added for the held-out
+    evaluation harness (app/services/evaluation.py). The only functional
+    difference is that Investigator evidence retrieval uses
+    investigate_async() with an optionally-shared `mcp_session` --
+    letting a caller processing many transactions in a loop (e.g. all
+    135 held-out test rows) open ONE MCP subprocess/session once and
+    reuse it across every transaction, instead of each transaction
+    independently spawning 5 new subprocesses via the sync
+    run_pipeline()/investigate() path.
+
+    Every other stage (baseline scoring, Detector, Critic, Policy Gate)
+    is IDENTICAL to run_pipeline() -- same functions, same arguments,
+    same semantics. This function exists purely to avoid the
+    subprocess-per-transaction overhead that was the confirmed root
+    cause of a 20+ minute stall during full held-out evaluation on
+    Windows (see app/mcp/client.py's module docstring for the full
+    diagnosis). run_pipeline() itself is unchanged and still used by
+    every single-transaction caller (main.py's /api/analyze, tests,
+    demo verification).
+    """
+    txn_df = pd.DataFrame([txn.model_dump(exclude={"is_fraud"})])
+    risk_score = float(predict_risk(model, txn_df)[0])
+
+    detector_output = explain_detection(txn, risk_score, use_llm=use_llm_detector)
+
+    evidence = await investigate_async(txn, detector_output, session=mcp_session)
+
+    if use_llm_critic:
+        critic_review = challenge(txn, detector_output, evidence)
+    else:
+        critic_review = _rule_based_critic_fallback(txn, detector_output, evidence)
+
     decision = decide(txn, detector_output, critic_review)
 
     return PipelineResult(
