@@ -1,0 +1,10 @@
+{
+  "n_transactions": 900,
+  "n_customers": 225,
+  "n_fraud": 136,
+  "n_legit": 764,
+  "measured_fraud_rate": 0.1511,
+  "pre_noise_target_rate": 0.08,
+  "label_noise_rate": 0.06,
+  "rng_seed": 42
+}
