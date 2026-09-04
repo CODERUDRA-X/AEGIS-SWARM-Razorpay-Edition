@@ -31,6 +31,7 @@ from pydantic import BaseModel
 
 from app.schemas.transaction import Transaction
 from app.schemas.risk import DetectorOutput, RiskLevel
+from app.agents._llm_timeout import call_with_timeout
 
 
 class _DetectorExplanation(BaseModel):
@@ -166,7 +167,8 @@ Your task:
 Do not invent signals not supported by the data above. Do not change the
 risk score or risk level -- those are already final."""
 
-    response = client.models.generate_content(
+    response = call_with_timeout(
+        client.models.generate_content,
         model="gemini-3.5-flash-lite",
         contents=prompt,
         config=types.GenerateContentConfig(

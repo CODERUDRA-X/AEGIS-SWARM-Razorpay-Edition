@@ -42,6 +42,7 @@ from google.genai import types
 from app.schemas.transaction import Transaction
 from app.schemas.risk import DetectorOutput
 from app.schemas.evidence import EvidencePacket, CriticReview
+from app.agents._llm_timeout import call_with_timeout
 
 
 def challenge(txn: Transaction, detector_output: DetectorOutput, evidence: EvidencePacket) -> CriticReview:
@@ -115,7 +116,8 @@ There is no tier above CRITICAL and none below LOW -- if evidence
 suggests more or less severity than these bounds, use the nearest valid
 tier and put the nuance in your reasoning text."""
 
-    response = client.models.generate_content(
+    response = call_with_timeout(
+        client.models.generate_content,
         model="gemini-3.5-flash-lite",
         contents=prompt,
         config=types.GenerateContentConfig(
