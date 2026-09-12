@@ -1,6 +1,8 @@
 <div align="center">
 <h1>AEGIS-SWARM — Razorpay Edition</h1>
-
+    
+> **By CODERUDRA-X**
+    
 ### The AI That Has to Earn the Right to Block a Payment.
 
 ## One Transaction. Four Independent Minds. Zero LLM Vetoes on the Final Call.
