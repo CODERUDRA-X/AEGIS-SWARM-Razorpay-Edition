@@ -1,5 +1,6 @@
 <div align="center">
 <h1>AEGIS-SWARM — Razorpay Edition</h1>
+<img src="ba0d8e16-f058-4390-a032-bd91eac04cd5.png" alt="AEGIS-SWARM Logo" width="420">
     
 > **By CODERUDRA-X**
     
