@@ -318,7 +318,7 @@ aegis-risk/
 ### 1. Backend — Risk Engine
 
 ```bash
-cd aegis-risk
+cd AEGIS-SWARM-Razorpay-Edition
 
 pip install -r requirements.txt
 
