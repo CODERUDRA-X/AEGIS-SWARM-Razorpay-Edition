@@ -31,7 +31,7 @@ from pydantic import BaseModel
 
 from app.schemas.transaction import Transaction
 from app.schemas.risk import DetectorOutput, RiskLevel
-from app.agents._llm_timeout import call_with_timeout
+from app.agents._llm_timeout import call_with_timeout, GEMINI_SDK_TIMEOUT_SECONDS
 
 
 class _DetectorExplanation(BaseModel):
@@ -131,7 +131,18 @@ def explain_detection(txn: Transaction, risk_score: float, use_llm: bool = True)
     if not api_key:
         raise ValueError("GEMINI_API_KEY is not set.")
 
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(
+        api_key=api_key,
+        # CRITICAL FIX: without this, the SDK's own HTTP transport has no
+        # explicit deadline, so a network-level stall (firewall/antivirus/
+        # proxy silently dropping the connection -- confirmed as the real
+        # cause via scripts/diagnose_gemini_connectivity.py) leaves the
+        # underlying request running indefinitely; our call_with_timeout()
+        # wrapper only stops WAITING for it, it cannot cancel it. Giving the
+        # SDK its own timeout makes it actually abort the stalled connection
+        # attempt instead of leaking it in the background.
+        http_options=types.HttpOptions(timeout=int(GEMINI_SDK_TIMEOUT_SECONDS * 1000)),
+    )
 
     prompt = f"""You are the Detector Agent in a payment fraud risk system.
 A machine learning model has ALREADY computed a fraud risk score for this
