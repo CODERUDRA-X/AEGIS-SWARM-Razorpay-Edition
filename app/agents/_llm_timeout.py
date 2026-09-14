@@ -36,6 +36,22 @@ import concurrent.futures
 # Configurable per-environment without a code change.
 GEMINI_CALL_TIMEOUT_SECONDS = float(os.environ.get("AEGIS_GEMINI_TIMEOUT_SECONDS", "45"))
 
+# SDK-LEVEL timeout, passed to genai.Client(http_options=...) in
+# detector.py/critic.py -- this is DIFFERENT from GEMINI_CALL_TIMEOUT_SECONDS
+# above. GEMINI_CALL_TIMEOUT_SECONDS only bounds how long OUR CODE waits
+# for a result; it cannot cancel the underlying network request, so if
+# that request is genuinely stuck (firewall/proxy/antivirus silently
+# dropping the connection -- confirmed via
+# scripts/diagnose_gemini_connectivity.py), the real HTTP call keeps
+# running in the background forever, leaking a thread every time.
+# GEMINI_SDK_TIMEOUT_SECONDS tells the google-genai SDK's own HTTP
+# transport to abort the connection attempt itself. It is set slightly
+# SHORTER than GEMINI_CALL_TIMEOUT_SECONDS so the SDK's own, more
+# specific error (e.g. a connection/timeout exception naming the actual
+# transport problem) surfaces before our generic outer wrapper's
+# "did not return within Xs" message does.
+GEMINI_SDK_TIMEOUT_SECONDS = float(os.environ.get("AEGIS_GEMINI_SDK_TIMEOUT_SECONDS", "35"))
+
 # One shared, small thread pool for these bounded calls -- avoids
 # spinning up a new thread (and its OS-level overhead) for every single
 # Gemini call across 135 evaluation rows.
