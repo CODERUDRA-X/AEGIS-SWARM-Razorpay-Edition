@@ -152,6 +152,19 @@ async def _evaluate_full_pipeline_async(
     n_total = len(test_df)
     run_start = time.monotonic()
 
+    # IMPORTANT: on an unrecoverable per-transaction failure, we do NOT
+    # raise from inside the `async with mcp_session()` block below.
+    # Raising there was confirmed (via a real Windows run) to make anyio's
+    # stdio_client/ClientSession __aexit__ wrap our RuntimeError inside a
+    # nested ExceptionGroup during its own subprocess cleanup -- technically
+    # correct per Python's structured-concurrency semantics, but it buries
+    # the actual error under several layers of "unhandled errors in a
+    # TaskGroup" noise. Instead, we record the failure here and `break` out
+    # of the loop, let the `async with` block exit normally (clean
+    # subprocess teardown, no pending exception to interact with), and only
+    # raise the clear, single-traceback RuntimeError AFTER that.
+    failure_info = None
+
     async with mcp_session() as session:
         for i, (_, row) in enumerate(test_df.iterrows(), start=1):
             txn = Transaction(**row.to_dict())
@@ -178,15 +191,8 @@ async def _evaluate_full_pipeline_async(
 
             if result is None:
                 elapsed_total = time.monotonic() - run_start
-                raise RuntimeError(
-                    f"Evaluation FAILED at transaction {i}/{n_total} "
-                    f"(transaction_id={txn.transaction_id}) after {MAX_TRANSACTION_RETRIES} attempts. "
-                    f"Last error: {type(last_error).__name__}: {last_error}. "
-                    f"{i - 1} transactions were evaluated successfully before this failure "
-                    f"({elapsed_total:.1f}s elapsed). The evaluated set was NOT completed, so no "
-                    f"evaluation_report.json was written -- this is a hard stop, not a silent skip, "
-                    f"because dropping this row would change the held-out metrics denominator."
-                ) from last_error
+                failure_info = (i, txn.transaction_id, last_error, elapsed_total)
+                break
 
             txn_elapsed = time.monotonic() - txn_start
             print(f"  -> {result.decision.action} in {txn_elapsed:.2f}s", flush=True)
@@ -215,6 +221,21 @@ async def _evaluate_full_pipeline_async(
                 "triggered_rule": result.decision.triggered_rule,
                 "estimated_cost_inr": result.decision.estimated_cost_inr,
             })
+    # `async with mcp_session()` has now exited cleanly (subprocess closed
+    # normally) regardless of whether failure_info was set -- safe to raise
+    # below with a single, uncluttered traceback.
+
+    if failure_info is not None:
+        i, txn_id, last_error, elapsed_total = failure_info
+        raise RuntimeError(
+            f"Evaluation FAILED at transaction {i}/{n_total} "
+            f"(transaction_id={txn_id}) after {MAX_TRANSACTION_RETRIES} attempts. "
+            f"Last error: {type(last_error).__name__}: {last_error}. "
+            f"{i - 1} transactions were evaluated successfully before this failure "
+            f"({elapsed_total:.1f}s elapsed). The evaluated set was NOT completed, so no "
+            f"evaluation_report.json was written -- this is a hard stop, not a silent skip, "
+            f"because dropping this row would change the held-out metrics denominator."
+        ) from last_error
 
     total_elapsed = time.monotonic() - run_start
     print(f"Evaluation loop complete: {n_total}/{n_total} transactions in {total_elapsed:.1f}s "
