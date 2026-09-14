@@ -42,7 +42,7 @@ from google.genai import types
 from app.schemas.transaction import Transaction
 from app.schemas.risk import DetectorOutput
 from app.schemas.evidence import EvidencePacket, CriticReview
-from app.agents._llm_timeout import call_with_timeout
+from app.agents._llm_timeout import call_with_timeout, GEMINI_SDK_TIMEOUT_SECONDS
 
 
 def challenge(txn: Transaction, detector_output: DetectorOutput, evidence: EvidencePacket) -> CriticReview:
@@ -58,7 +58,12 @@ def challenge(txn: Transaction, detector_output: DetectorOutput, evidence: Evide
     if not api_key:
         raise ValueError("GEMINI_API_KEY is not set.")
 
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(
+        api_key=api_key,
+        # See app/agents/detector.py for why this SDK-level timeout is
+        # necessary in addition to call_with_timeout() below.
+        http_options=types.HttpOptions(timeout=int(GEMINI_SDK_TIMEOUT_SECONDS * 1000)),
+    )
 
     prompt = f"""You are the Adversarial Critic Agent in a payment fraud risk system.
 Your role is to act as an independent auditor whose job is specifically
